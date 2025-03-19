@@ -193,23 +193,18 @@ def upload_book():
         last_book = Book.query.order_by(Book.book_id.desc()).first()
         new_book_id = last_book.book_id + 1 if last_book else 1
 
-        if 'file' not in request.files:
+        if 'file' not in request.files or request.files['file'].filename == '':
             return jsonify({"error": "No file uploaded"}), 400
 
         file = request.files['file']
-        if file.filename == '':
-            return jsonify({"error": "No file selected"}), 400
-
         if not allowed_file(file.filename):
             return jsonify({"error": "Invalid file type"}), 400
 
-        # Rename file using the new book ID
+        # Save file directly without encryption
         file_ext = os.path.splitext(file.filename)[1]
         epub_filename = f"{new_book_id}{file_ext}"
-        encrypted_file_content = encrypt_file(file)
-        full_file_path = os.path.join(current_app.config['FILE_UPLOAD_FOLDER'], epub_filename + ".enc")
-        with open(full_file_path, 'wb') as f:
-            f.write(encrypted_file_content)
+        full_file_path = os.path.join(current_app.config['FILE_UPLOAD_FOLDER'], epub_filename)
+        file.save(full_file_path)
 
         cover_image_filename = None
         if 'cover_image' in request.files:
@@ -232,7 +227,7 @@ def upload_book():
             title=title,
             author=author,
             isbn=isbn,
-            epub_file=f"{epub_filename}.enc",
+            epub_file=epub_filename,
             cover_image=cover_image_filename,
             language=language,
             genre=genre,
@@ -244,26 +239,17 @@ def upload_book():
         )
         db.session.add(new_book)
         db.session.flush()
-
-        new_file = File(
-            publisher_id=publisher_id,
-            book_id=new_book.book_id,
-            file_path=f"{epub_filename}.enc"
-        )
-        db.session.add(new_file)
         db.session.commit()
 
         return jsonify({
-            "message": "Book uploaded successfully",
-            "book_id": new_book.book_id,
-            "file_name": f"{epub_filename}.enc",
-            "cover_image_name": cover_image_filename,
-            "status": book_status
+            "message": "Book uploaded successfully"
         }), 201
 
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 500
+
+
 
 
 # Helper function to check allowed image file extensions
@@ -368,17 +354,19 @@ def get_books():
         for book in books:
             book_details = {
                 "book_id": book.book_id,
-                "title": book.title,
-                "author": book.author,
-                "isbn": book.isbn,
-                "language": book.language,
-                "genre": book.genre,
-                "e_book_type": book.e_book_type,
-                "price": str(book.price),
-                "rental_price": str(book.rental_price),
-                "description": book.description,
-                "created_at": book.created_at.strftime('%Y-%m-%d %H:%M:%S'),
-                "updated_at": book.updated_at.strftime('%Y-%m-%d %H:%M:%S')
+            "title": book.title,
+            "author": book.author,
+            "isbn": book.isbn,
+            "language": book.language,
+            "genre": book.genre,
+            "e_book_type": book.e_book_type,
+            "price": str(book.price),
+            "rental_price": str(book.rental_price),
+            "description": book.description,
+            "created_at": book.created_at.strftime('%Y-%m-%d %H:%M:%S'),
+            "updated_at": book.updated_at.strftime('%Y-%m-%d %H:%M:%S'),
+            "epub_file": book.epub_file,
+            "category_id": book.category_id
             }
 
             books_details.append(book_details)
@@ -456,13 +444,10 @@ def update_book(book_id):
                 if allowed_file(file.filename):
                     file_ext = os.path.splitext(file.filename)[1]  # Get file extension
                     epub_filename = f"{book.book_id}{file_ext}"
-                    encrypted_file_content = encrypt_file(file)
+                    full_file_path = os.path.join(file_upload_folder, epub_filename)
+                    file.save(full_file_path)
 
-                    full_file_path = os.path.join(file_upload_folder, epub_filename + ".enc")
-                    with open(full_file_path, 'wb') as f:
-                        f.write(encrypted_file_content)
-
-                    book.epub_file = f"{epub_filename}.enc"  # Store updated file name
+                    book.epub_file = epub_filename  # Store updated file name
 
                 else:
                     return jsonify({"error": "Invalid file type"}), 400
@@ -495,15 +480,13 @@ def update_book(book_id):
         db.session.commit()
 
         return jsonify({
-            "message": "Book updated successfully",
-            "book_id": book.book_id,
-            "file_name": book.epub_file,  # Return updated EPUB file name
-            "cover_image_name": book.cover_image  # Return updated cover image name
+            "message": "Book updated successfully"
         }), 200
 
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 500
+
 
 
 
@@ -588,14 +571,7 @@ def add_highlight():
     db.session.commit()
 
     return jsonify({
-        "message": "Highlight added successfully",
-        "highlight": {
-            "hl_id": new_highlight.hl_id,
-            "book_id": new_highlight.book_id,
-            "text": new_highlight.text,
-            "highlight_range": new_highlight.highlight_range,
-            "color": new_highlight.color
-        }
+        "message": "Highlight added successfully"
     }), 201
 
 
@@ -677,13 +653,7 @@ def add_note():
     db.session.commit()
 
     return jsonify({
-        "message": "Note added successfully",
-        "note": {
-            "note_id": new_note.note_id,
-            "book_id": new_note.book_id,
-            "text": new_note.text,
-            "note_range": new_note.note_range
-        }
+        "message": "Note added successfully"
     }), 201
 
 
@@ -765,12 +735,7 @@ def purchase_book():
     db.session.commit()
 
     return jsonify({
-        "message": "Book purchased successfully",
-        "purchase": {
-            "bp_id": new_purchase.bp_id,
-            "book_id": new_purchase.book_id,
-            "bookmark": new_purchase.bookmark
-        }
+        "message": "Book purchased successfully"
     }), 201
 
 @book_bp.route('/reader/get_purchased_books', methods=['GET'])
@@ -868,6 +833,11 @@ def add_to_cart():
     if not book:
         return jsonify({"error": "Book not found"}), 404
 
+    # Check if the book is already in the cart
+    existing_cart_item = Cart.query.filter_by(reader_id=reader_id, book_id=book_id).first()
+    if existing_cart_item:
+        return jsonify({"error": "Book is already in the cart"}), 400
+
     # Add to cart
     new_cart_item = Cart(reader_id=reader_id, book_id=book_id)
     db.session.add(new_cart_item)
@@ -933,6 +903,11 @@ def add_to_wishlist():
     if not book:
         return jsonify({"error": "Book not found"}), 404
 
+    # Check if the book is already in the wishlist
+    existing_wishlist_item = Wishlist.query.filter_by(reader_id=reader_id, book_id=book_id).first()
+    if existing_wishlist_item:
+        return jsonify({"error": "Book is already in the wishlist"}), 400
+
     # Add to wishlist
     new_wishlist_item = Wishlist(reader_id=reader_id, book_id=book_id)
     db.session.add(new_wishlist_item)
@@ -984,7 +959,6 @@ def delete_wishlist(wishlist_id):
 
 
 @book_bp.route('/stream/<filename>')
-@jwt_required()
 def serve_epub(filename):
     file_path = os.path.join(current_app.config['FILE_UPLOAD_FOLDER'], filename)
 
