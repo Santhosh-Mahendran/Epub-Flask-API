@@ -48,6 +48,7 @@ class Book(db.Model):
     price = db.Column(db.Numeric)
     rental_price = db.Column(db.Numeric)
     description = db.Column(db.Text)
+    status = db.Column(db.String(10), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -130,3 +131,17 @@ class Cart(db.Model):
     # Relationships
     reader = db.relationship('Reader', backref=db.backref('carts', lazy=True))
     book = db.relationship('Book', backref=db.backref('carts', lazy=True))
+
+
+class Wishlist(db.Model):
+    __tablename__ = 'wishlist'
+    wishlist_id = db.Column(db.Integer, primary_key=True)
+    reader_id = db.Column(db.Integer, db.ForeignKey('reader.reader_id', ondelete='CASCADE'), nullable=False)
+    book_id = db.Column(db.Integer, db.ForeignKey('book.book_id', ondelete='CASCADE'), nullable=False)
+    added_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    # Relationships
+    reader = db.relationship('Reader', backref=db.backref('wishlists', lazy=True))
+    book = db.relationship('Book', backref=db.backref('wishlists', lazy=True))
+
+

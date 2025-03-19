@@ -1,9 +1,9 @@
-from flask import Blueprint, request, jsonify, current_app, send_file, Response
+from flask import Blueprint, request, jsonify, current_app, send_file, Response, abort
 from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity, decode_token
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 
-from .models import Publisher, Category, Book, File, Reader, Highlight, Note, BooksPurchased, Cart
+from .models import Publisher, Category, Book, File, Reader, Highlight, Note, BooksPurchased, Cart, Wishlist
 from .extensions import db, limiter
 from datetime import datetime
 import os
@@ -171,10 +171,7 @@ def encrypt_file(file):
 @jwt_required()
 def upload_book():
     try:
-        # Get publisher_id from JWT
         publisher_id = get_jwt_identity()
-
-        # Get form data
         title = request.form.get('title')
         author = request.form.get('author')
         isbn = request.form.get('isbn')
@@ -186,20 +183,16 @@ def upload_book():
         rental_price = request.form.get('rental_price', 0)
         description = request.form.get('description')
 
-        # Validate required fields
         if not all([title, author, isbn, category_id]):
             return jsonify({"error": "Missing required fields"}), 400
 
-        # Validate category exists for publisher
         category = Category.query.filter_by(category_id=category_id, publisher_id=publisher_id).first()
         if not category:
             return jsonify({"error": "Invalid category ID"}), 400
 
-        # Get the last book_id and increment by 1
         last_book = Book.query.order_by(Book.book_id.desc()).first()
         new_book_id = last_book.book_id + 1 if last_book else 1
 
-        # Handle file upload
         if 'file' not in request.files:
             return jsonify({"error": "No file uploaded"}), 400
 
@@ -211,16 +204,13 @@ def upload_book():
             return jsonify({"error": "Invalid file type"}), 400
 
         # Rename file using the new book ID
-        file_ext = os.path.splitext(file.filename)[1]  # Get file extension
+        file_ext = os.path.splitext(file.filename)[1]
         epub_filename = f"{new_book_id}{file_ext}"
         encrypted_file_content = encrypt_file(file)
-
-        # Save encrypted file to disk
         full_file_path = os.path.join(current_app.config['FILE_UPLOAD_FOLDER'], epub_filename + ".enc")
         with open(full_file_path, 'wb') as f:
             f.write(encrypted_file_content)
 
-        # Handle cover image if uploaded
         cover_image_filename = None
         if 'cover_image' in request.files:
             cover_image = request.files['cover_image']
@@ -232,30 +222,33 @@ def upload_book():
             elif cover_image.filename != '':
                 return jsonify({"error": "Invalid cover image type"}), 400
 
-        # Insert new book record into DB (Store only file name)
+        # Check if book title already exists
+        existing_book = Book.query.filter_by(title=title).first()
+        book_status = 'pending' if existing_book else 'live'
+
         new_book = Book(
             publisher_id=publisher_id,
             category_id=category_id,
             title=title,
             author=author,
             isbn=isbn,
-            epub_file=f"{epub_filename}.enc",  # Store only the file name
-            cover_image=cover_image_filename,  # Store only the file name
+            epub_file=f"{epub_filename}.enc",
+            cover_image=cover_image_filename,
             language=language,
             genre=genre,
             e_book_type=e_book_type,
             price=price,
             rental_price=rental_price,
-            description=description
+            description=description,
+            status=book_status
         )
         db.session.add(new_book)
-        db.session.flush()  # Flush to get book_id
+        db.session.flush()
 
-        # Insert file record into DB (Store only file name)
         new_file = File(
             publisher_id=publisher_id,
             book_id=new_book.book_id,
-            file_path=f"{epub_filename}.enc"  # Store only the file name
+            file_path=f"{epub_filename}.enc"
         )
         db.session.add(new_file)
         db.session.commit()
@@ -264,7 +257,8 @@ def upload_book():
             "message": "Book uploaded successfully",
             "book_id": new_book.book_id,
             "file_name": f"{epub_filename}.enc",
-            "cover_image_name": cover_image_filename
+            "cover_image_name": cover_image_filename,
+            "status": book_status
         }), 201
 
     except Exception as e:
@@ -348,16 +342,8 @@ def get_book(book_id):
             "description": book.description,
             "created_at": book.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             "updated_at": book.updated_at.strftime('%Y-%m-%d %H:%M:%S'),
-            "files": []
+            "epub_file": book.epub_file
         }
-
-        # Include associated files
-        for file in book.files:
-            book_details["files"].append({
-                "file_id": file.file_id,
-                "file_path": file.file_path,
-                "uploaded_at": file.uploaded_at.strftime('%Y-%m-%d %H:%M:%S')
-            })
         return jsonify(book_details), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -866,40 +852,6 @@ def get_reader_book(book_id):
         return jsonify({"error": str(e)}), 500
 
 
-
-@book_bp.route('/books/<book_id>', methods=['GET'])
-def get_book_stream(book_id):
-    EPUB_DIR = current_app.config['FILE_UPLOAD_FOLDER']
-    epub_path = os.path.normpath(os.path.join(EPUB_DIR, f"{book_id}.epub"))
-
-    if os.path.exists(epub_path):
-        def generate():
-            with open(epub_path, "rb") as f:
-                while chunk := f.read(4096):
-                    yield chunk
-        return Response(generate(), content_type='application/epub+zip')
-
-    return {"error": "File not found"}, 404
-
-
-@book_bp.route('/reader/get_epub/<book_id>', methods=['GET'])
-def get_epub(book_id):
-    EPUB_DIR = current_app.config['FILE_UPLOAD_FOLDER']
-    epub_path = os.path.normpath(os.path.join(EPUB_DIR, f"{book_id}.epub"))
-
-    if not os.path.exists(epub_path):
-        return jsonify({"error": "Book not found"}), 404
-
-    print("Book found. Sending EPUB.")
-    response = send_file(
-        epub_path,
-        mimetype="application/epub+zip",
-        as_attachment=False
-    )
-    response.headers["Content-Type"] = "application/epub+zip"
-    return response
-
-
 @book_bp.route('/reader/add_cart', methods=['POST'])
 @jwt_required()
 def add_to_cart():
@@ -963,3 +915,79 @@ def delete_cart(cart_id):
     except Exception as e:
         db.session.rollback()
         return jsonify({"error": str(e)}), 500
+
+
+@book_bp.route('/reader/add_wishlist', methods=['POST'])
+@jwt_required()
+def add_to_wishlist():
+    data = request.json
+    reader_id = get_jwt_identity()
+    book_id = data.get('book_id')
+
+    if not book_id:
+        return jsonify({"error": "Book ID is required"}), 400
+
+    # Check if the book exists
+    book = Book.query.get(book_id)
+    if not book:
+        return jsonify({"error": "Book not found"}), 404
+
+    # Add to wishlist
+    new_wishlist_item = Wishlist(reader_id=reader_id, book_id=book_id)
+    db.session.add(new_wishlist_item)
+    db.session.commit()
+
+    return jsonify({"message": "Book added to wishlist successfully"}), 201
+
+
+@book_bp.route('/reader/get_wishlist', methods=['GET'])
+@jwt_required()
+def get_wishlist():
+    reader_id = get_jwt_identity()
+    wishlist_items = Wishlist.query.filter_by(reader_id=reader_id).all()
+
+    return jsonify({
+        "wishlist": [
+            {
+                "wishlist_id": item.wishlist_id,
+                "book_id": item.book.book_id,
+                "title": item.book.title,
+                "author": item.book.author,
+                "added_at": item.added_at.strftime('%Y-%m-%d %H:%M:%S')
+            }
+            for item in wishlist_items
+        ]
+    }), 200
+
+
+@book_bp.route('/reader/delete_wishlist/<int:wishlist_id>', methods=['DELETE'])
+@jwt_required()
+def delete_wishlist(wishlist_id):
+    try:
+        reader_id = get_jwt_identity()
+
+        # Check if the wishlist item exists
+        wishlist_item = Wishlist.query.filter_by(wishlist_id=wishlist_id, reader_id=reader_id).first()
+        if not wishlist_item:
+            return jsonify({"error": "Wishlist item not found"}), 404
+
+        # Delete the item
+        db.session.delete(wishlist_item)
+        db.session.commit()
+
+        return jsonify({"message": "Wishlist item deleted successfully"}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
+
+
+@book_bp.route('/stream/<filename>')
+@jwt_required()
+def serve_epub(filename):
+    file_path = os.path.join(current_app.config['FILE_UPLOAD_FOLDER'], filename)
+
+    if os.path.exists(file_path):
+        return send_file(file_path)
+    else:
+        abort(404, description="File not found")
