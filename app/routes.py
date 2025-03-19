@@ -342,7 +342,8 @@ def get_book(book_id):
             "description": book.description,
             "created_at": book.created_at.strftime('%Y-%m-%d %H:%M:%S'),
             "updated_at": book.updated_at.strftime('%Y-%m-%d %H:%M:%S'),
-            "epub_file": book.epub_file
+            "epub_file": book.epub_file,
+            "category_id": book.category_id
         }
         return jsonify(book_details), 200
     except Exception as e:
