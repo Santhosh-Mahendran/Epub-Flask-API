@@ -114,7 +114,8 @@ class BooksPurchased(db.Model):
     bp_id = db.Column(db.Integer, primary_key=True)  # Primary Key
     reader_id = db.Column(db.Integer, db.ForeignKey('reader.reader_id'), nullable=False)  # Foreign Key to Reader
     book_id = db.Column(db.Integer, db.ForeignKey('book.book_id'), nullable=False)  # Foreign Key to Book
-    bookmark = db.Column(db.Integer, default=0)  # Bookmark (0 to 100)
+    bookmark = db.Column(db.Integer, nullable=True)  # Bookmark can be NULL
+    percentage = db.Column(db.Integer, nullable=True)  # Percentage can be NULL
     purchase_date = db.Column(db.DateTime, default=datetime.utcnow)  # Purchase Timestamp
 
     # Relationships (optional)

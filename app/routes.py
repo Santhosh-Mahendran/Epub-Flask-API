@@ -10,14 +10,14 @@ import os
 from cryptography.fernet import Fernet
 
 import time
+import zipfile
+from lxml import etree
 
 
 ph = PasswordHasher()
 auth = Blueprint('auth', __name__)
 book_bp = Blueprint('book', __name__)
 files_bp = Blueprint('files', __name__)
-upload_bp = Blueprint('upload', __name__)
-category_bp = Blueprint('category', __name__)
 
 
 
@@ -167,6 +167,46 @@ def encrypt_file(file):
     return encrypted_content
 
 
+def extract_cover(epub_path, book_id):
+    try:
+        with zipfile.ZipFile(epub_path, 'r') as epub:
+            # Step 1: Find content.opf using container.xml
+            container_path = 'META-INF/container.xml'
+            with epub.open(container_path) as container_file:
+                container_xml = etree.parse(container_file)
+                opf_path = container_xml.xpath("//*[local-name()='rootfile']/@full-path")[0]
+
+            # Step 2: Parse content.opf to get the cover image
+            with epub.open(opf_path) as opf_file:
+                opf_xml = etree.parse(opf_file)
+
+                # Search for cover image using 'cover' ID or properties="cover-image"
+                cover_item = opf_xml.xpath("//*[local-name()='item'][@id='cover' or @properties='cover-image']")
+
+                if not cover_item:
+                    raise Exception('Cover image not found.')
+
+                cover_href = cover_item[0].get('href')
+
+                # Ensure correct relative path
+                cover_path = os.path.join(os.path.dirname(opf_path), cover_href).replace("\\", "/")
+
+                # Step 3: Extract cover image
+                with epub.open(cover_path) as cover_file:
+                    cover_ext = os.path.splitext(cover_href)[1]
+                    cover_image_filename = f"{book_id}{cover_ext}"
+                    full_cover_image_path = os.path.join(current_app.config['IMAGE_UPLOAD_FOLDER'],
+                                                         cover_image_filename)
+
+                    with open(full_cover_image_path, 'wb') as out_file:
+                        out_file.write(cover_file.read())
+
+                    return cover_image_filename
+    except Exception as e:
+        print(f"Cover extraction failed: {e}")
+        return None
+
+
 @files_bp.route('/pub/upload_book', methods=['POST'])
 @jwt_required()
 def upload_book():
@@ -200,13 +240,15 @@ def upload_book():
         if not allowed_file(file.filename):
             return jsonify({"error": "Invalid file type"}), 400
 
-        # Save file directly without encryption
+        # Save the EPUB file
         file_ext = os.path.splitext(file.filename)[1]
         epub_filename = f"{new_book_id}{file_ext}"
         full_file_path = os.path.join(current_app.config['FILE_UPLOAD_FOLDER'], epub_filename)
         file.save(full_file_path)
 
         cover_image_filename = None
+
+        # If cover image is provided, save it
         if 'cover_image' in request.files:
             cover_image = request.files['cover_image']
             if cover_image.filename != '' and allowed_file(cover_image.filename):
@@ -216,6 +258,9 @@ def upload_book():
                 cover_image.save(full_cover_image_path)
             elif cover_image.filename != '':
                 return jsonify({"error": "Invalid cover image type"}), 400
+        else:
+            # If no cover image provided, extract from EPUB
+            cover_image_filename = extract_cover(full_file_path, new_book_id)
 
         # Check if book title already exists
         existing_book = Book.query.filter_by(title=title).first()
@@ -241,9 +286,7 @@ def upload_book():
         db.session.flush()
         db.session.commit()
 
-        return jsonify({
-            "message": "Book uploaded successfully"
-        }), 201
+        return jsonify({"message": "Book uploaded successfully"}), 201
 
     except Exception as e:
         db.session.rollback()
@@ -766,7 +809,8 @@ def get_purchased_books():
                     "cover_image": book.cover_image,
                     "file_path": book.epub_file,
                     "purchase_date": purchase.purchase_date,
-                    "bookmark": purchase.bookmark
+                    "bookmark": purchase.bookmark,
+                    "percentage": purchase.percentage
                 })
 
         return jsonify({
@@ -966,3 +1010,36 @@ def serve_epub(filename):
         return send_file(file_path)
     else:
         abort(404, description="File not found")
+
+
+@book_bp.route('/reader/update_progress', methods=['PUT'])
+@jwt_required()
+def update_progress():
+    try:
+        data = request.json
+        reader_id = get_jwt_identity()
+        book_id = data.get('book_id')
+        bookmark = data.get('bookmark')
+        percentage = data.get('percentage')
+
+        if not book_id:
+            return jsonify({"error": "Book ID is required"}), 400
+
+        # Find the purchase record
+        purchase = BooksPurchased.query.filter_by(reader_id=reader_id, book_id=book_id).first()
+
+        if not purchase:
+            return jsonify({"error": "Book purchase record not found"}), 404
+
+        # Update fields if provided
+        if bookmark is not None:
+            purchase.bookmark = bookmark
+        if percentage is not None:
+            purchase.percentage = percentage
+
+        db.session.commit()
+        return jsonify({"message": "Progress updated successfully"}), 200
+
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"error": str(e)}), 500
